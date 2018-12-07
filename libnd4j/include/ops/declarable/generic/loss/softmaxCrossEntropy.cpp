@@ -208,7 +208,7 @@ CUSTOM_OP_IMPL(softmax_cross_entropy_loss_grad, 3, 3, false, 1, 1) {
     REQUIRE_TRUE(weights->isScalar() || ShapeUtils::areShapesBroadcastable(weights->getShapeInfo(), lossShapeInfo), 0, "SOFTMAX_CROSS_ENTROPY_LOSS OP: shapes of weights and output arrays should be broadcastable, but got weights = %s and output = %s instead!", ShapeUtils::shapeAsString(weights).c_str(), ShapeUtils::shapeAsString(lossShapeInfo).c_str());
 
 	// If label_smoothing is nonzero, smooth the labels towards 1/num_classes: new_onehot_labels = onehot_labels * (1 - label_smoothing) + label_smoothing / num_classes
-	// num_classes = labels->sizeAt(1)
+	// num_classes = labels->sizeAt(1),why ????
 	auto newLabels = labels;
 	if(labelsSmoothing != 0.) {
 		newLabels = new NDArray(labels);
@@ -218,14 +218,14 @@ CUSTOM_OP_IMPL(softmax_cross_entropy_loss_grad, 3, 3, false, 1, 1) {
 	NDArray softmax = (*logits - logits->reduceAlongDims(reduce::Max, dimensions, true)).transform(transform::Exp);
 	softmax /= softmax.reduceAlongDims(reduce::Sum, dimensions, true);
 
-	// dLdp = softmax * sum_i(lables_i) - lables
-	dLdp->assign(softmax * labels->reduceAlongDims(reduce::Sum, dimensions, true) - *labels);
+	// dEdp = softmax * sum_i(lables_i) - lables
+	dLdp->assign(softmax * newLabels->reduceAlongDims(reduce::Sum, dimensions, true) - *newLabels);
 
-	// dLdl = -log(softmax)
-	dLdl->assign(-softmax.transform(transform::Log));
-
+	// dEdl = -log(softmax), is smoothing is present then dLdl = -log(softmax) * (1-labelsSmoothing)
+	dLdl->assign(-softmax.transform(transform::Log) * (1.f - labelsSmoothing));
+	
 	// E = - sum_i(labels_i * log(softmax_i))
-	NDArray E = (*labels * *dLdl).reduceAlongDims(reduce::Sum, dimensions);
+	NDArray E = (*newLabels * *dLdl).reduceAlongDims(reduce::Sum, dimensions);	
 	
 	// perform weights broadcasting/tile to E if it is necessary
 	auto weightsBroad = weights;
@@ -241,9 +241,9 @@ CUSTOM_OP_IMPL(softmax_cross_entropy_loss_grad, 3, 3, false, 1, 1) {
 	switch (reductionMode) {
 		case 1: {											// 1 - "none" and "weighted_sum", output is scalar and equal to sum of all elements of E array
 						
-			dLdp->applyBroadcast(nd4j::broadcast::Multiply, dimensions, weightsBroad);
+			dLdp->applyBroadcast(nd4j::broadcast::Multiply, dimensions, weightsBroad);			
 			dLdl->applyBroadcast(nd4j::broadcast::Multiply, dimensions, weightsBroad);
-
+			
 			if(weights->isScalar())
 				dLdw->assign(E.reduceNumber(reduce::Sum));
 			else if(weights != weightsBroad && E.rankOf() > 1) {
@@ -338,7 +338,7 @@ DECLARE_TYPES(softmax_cross_entropy_loss_grad) {
 
 //////////////////////////////////////////////////////////////////////////
 DECLARE_SHAPE_FN(softmax_cross_entropy_loss_grad) {
-	
+
 	auto logitsShapeInfo  = inputShape->at(0);
 	auto weightsShapeInfo = inputShape->at(1);
     auto labelsShapeInfo  = inputShape->at(2);
